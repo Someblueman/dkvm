@@ -1,0 +1,38 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "dkvm"
+version = "0.1.0"
+description = "Switch Dell monitor KVM inputs from the command line using DDC/CI."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+authors = [{ name = "dkvm contributors" }]
+keywords = ["ddc", "ddcci", "kvm", "dell", "monitor"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: End Users/Desktop",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: MacOS",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Topic :: Utilities",
+]
+
+[project.urls]
+Homepage = "https://github.com/Someblueman/dkvm"
+Repository = "https://github.com/Someblueman/dkvm"
+Issues = "https://github.com/Someblueman/dkvm/issues"
+
+[project.scripts]
+dkvm = "dkvm.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dkvm"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
