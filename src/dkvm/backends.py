@@ -31,6 +31,9 @@ class Backend:
     def set_input_command(self, display: str | None, value: int) -> Command:
         raise NotImplementedError
 
+    def set_vcp_command(self, display: str | None, feature: int, value: int) -> Command:
+        raise BackendError(f"backend '{self.name}' does not support arbitrary VCP writes")
+
     def run(self, command: Command) -> subprocess.CompletedProcess[str]:
         return subprocess.run(command.argv, check=True, text=True)
 
@@ -53,6 +56,13 @@ class DdcutilBackend(Backend):
         argv.extend(["setvcp", "60", f"0x{value:02x}"])
         return Command(argv)
 
+    def set_vcp_command(self, display: str | None, feature: int, value: int) -> Command:
+        argv = ["ddcutil"]
+        if display:
+            argv.extend(["--display", display])
+        argv.extend(["setvcp", f"{feature:02x}", f"0x{value:02x}"])
+        return Command(argv)
+
 
 class M1DdcBackend(Backend):
     name = "m1ddc"
@@ -67,6 +77,26 @@ class M1DdcBackend(Backend):
         if display:
             argv.extend(["display", display])
         argv.extend(["set", "input", str(value)])
+        return Command(argv)
+
+    def set_vcp_command(self, display: str | None, feature: int, value: int) -> Command:
+        command_names = {
+            0x60: "input",
+            0xE7: "kvm",
+            0xE8: "pbp-input",
+            0xE9: "pbp",
+        }
+        try:
+            command_name = command_names[feature]
+        except KeyError as exc:
+            raise BackendError(
+                f"backend '{self.name}' does not support VCP feature 0x{feature:02x}"
+            ) from exc
+
+        argv = ["m1ddc"]
+        if display:
+            argv.extend(["display", display])
+        argv.extend(["set", command_name, str(value)])
         return Command(argv)
 
 

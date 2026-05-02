@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 from pathlib import Path
 import sys
 import tomllib
@@ -24,13 +25,39 @@ DEFAULT_INPUTS: dict[str, int] = {
     "usb_c": 0x1B,
 }
 
+DEFAULT_SPLITS: dict[str, int] = {
+    "off": 0,
+    "pip-small": 33,
+    "pip-large": 34,
+    "pbp": 36,
+    "pbp-50-50": 36,
+    "pbp-26-74": 43,
+    "pbp-74-26": 44,
+    "pbp-2x2": 65,
+}
+
+PBP_MODE_FEATURE = 0xE9
+PBP_INPUT_FEATURE = 0xE8
+KVM_FEATURE = 0xE7
+
 DEFAULT_CONFIG = """backend = "auto"
 display = "1"
 
 [inputs]
 work = "0x0f"
 personal = "0x1b"
+
+[splits]
+off = { mode = "0x00" }
+two-way = { mode = "0x24", sub_input = "work" }
+four-way = { mode = "0x41" }
 """
+
+
+@dataclass(frozen=True)
+class VcpWrite:
+    feature: int
+    value: int
 
 
 def config_path() -> Path:
@@ -46,17 +73,25 @@ def load_config(path: Path | None = None) -> dict[str, object]:
         return tomllib.load(handle)
 
 
-def parse_input_value(raw: object) -> int:
+def parse_int_value(raw: object, *, value_name: str) -> int:
     if isinstance(raw, int):
         if raw < 0:
-            raise ValueError("input value must be non-negative")
+            raise ValueError(f"{value_name} must be non-negative")
         return raw
     if not isinstance(raw, str):
-        raise ValueError("input value must be a string or integer")
+        raise ValueError(f"{value_name} must be a string or integer")
     value = raw.strip().lower()
     if value.startswith("0x"):
         return int(value, 16)
     return int(value, 10)
+
+
+def parse_input_value(raw: object) -> int:
+    return parse_int_value(raw, value_name="input value")
+
+
+def parse_vcp_value(raw: object, *, value_name: str = "VCP value") -> int:
+    return parse_int_value(raw, value_name=value_name)
 
 
 def resolve_input(target: str, config: dict[str, object]) -> int:
@@ -69,13 +104,90 @@ def resolve_input(target: str, config: dict[str, object]) -> int:
     return parse_input_value(key)
 
 
+def resolve_feature(raw: object) -> int:
+    feature = parse_vcp_value(raw, value_name="VCP feature")
+    if feature > 0xFF:
+        raise ValueError("VCP feature must fit in one byte")
+    return feature
+
+
+def split_write_from_config(raw: object, config: dict[str, object]) -> list[VcpWrite]:
+    if isinstance(raw, list):
+        writes: list[VcpWrite] = []
+        for item in raw:
+            writes.extend(split_write_from_config(item, config))
+        return writes
+
+    if isinstance(raw, (str, int)):
+        return [VcpWrite(PBP_MODE_FEATURE, parse_vcp_value(raw))]
+
+    if not isinstance(raw, dict):
+        raise ValueError("split config must be a table, array, string, or integer")
+
+    writes = []
+    if "mode" in raw:
+        writes.append(VcpWrite(PBP_MODE_FEATURE, parse_vcp_value(raw["mode"])))
+
+    for input_key in ("sub_input", "subinput", "pbp_input"):
+        if input_key in raw:
+            writes.append(
+                VcpWrite(PBP_INPUT_FEATURE, resolve_input(str(raw[input_key]), config))
+            )
+
+    if "kvm" in raw:
+        writes.append(VcpWrite(KVM_FEATURE, parse_vcp_value(raw["kvm"])))
+
+    if "feature" in raw and "value" in raw:
+        writes.append(
+            VcpWrite(resolve_feature(raw["feature"]), parse_vcp_value(raw["value"]))
+        )
+
+    raw_writes = raw.get("writes")
+    if raw_writes is not None:
+        if not isinstance(raw_writes, list):
+            raise ValueError("split writes must be an array")
+        for item in raw_writes:
+            writes.extend(split_write_from_config(item, config))
+
+    if not writes:
+        raise ValueError(
+            "split config must include mode, sub_input, kvm, feature/value, or writes"
+        )
+    return writes
+
+
+def resolve_split(
+    target: str,
+    config: dict[str, object],
+    *,
+    sub_input: str | None = None,
+) -> list[VcpWrite]:
+    key = target.strip().lower()
+    config_splits = config.get("splits", {})
+    if isinstance(config_splits, dict) and key in config_splits:
+        writes = split_write_from_config(config_splits[key], config)
+    elif key in DEFAULT_SPLITS:
+        writes = [VcpWrite(PBP_MODE_FEATURE, DEFAULT_SPLITS[key])]
+    else:
+        writes = [VcpWrite(PBP_MODE_FEATURE, parse_vcp_value(key))]
+
+    if sub_input is not None:
+        writes.append(VcpWrite(PBP_INPUT_FEATURE, resolve_input(sub_input, config)))
+    return writes
+
+
+def configured_display(args: argparse.Namespace, config: dict[str, object]) -> str | None:
+    display = args.display
+    if display is None:
+        config_display = config.get("display")
+        display = str(config_display) if config_display is not None else None
+    return display
+
+
 def command_switch(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     backend_name = args.backend or str(config.get("backend", "auto"))
-    display = args.display
-    if display is None:
-        configured_display = config.get("display")
-        display = str(configured_display) if configured_display is not None else None
+    display = configured_display(args, config)
 
     try:
         backend = select_backend(backend_name, require_available=not args.dry_run)
@@ -95,6 +207,36 @@ def command_switch(args: argparse.Namespace) -> int:
         print(f"dkvm: command failed: {command.display()}", file=sys.stderr)
         print(f"dkvm: {exc}", file=sys.stderr)
         return 1
+    return 0
+
+
+def command_split(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+    backend_name = args.backend or str(config.get("backend", "auto"))
+    display = configured_display(args, config)
+
+    try:
+        backend = select_backend(backend_name, require_available=not args.dry_run)
+        writes = resolve_split(args.target, config, sub_input=args.sub_input)
+        commands = [
+            backend.set_vcp_command(display, write.feature, write.value) for write in writes
+        ]
+    except (BackendError, ValueError) as exc:
+        print(f"dkvm: {exc}", file=sys.stderr)
+        return 2
+
+    if args.dry_run:
+        for command in commands:
+            print(command.display())
+        return 0
+
+    for command in commands:
+        try:
+            backend.run(command)
+        except Exception as exc:
+            print(f"dkvm: command failed: {command.display()}", file=sys.stderr)
+            print(f"dkvm: {exc}", file=sys.stderr)
+            return 1
     return 0
 
 
@@ -163,6 +305,15 @@ def build_parser() -> argparse.ArgumentParser:
     switch.add_argument("--config", type=Path, help="config file path")
     switch.add_argument("--dry-run", action="store_true", help="print the backend command")
     switch.set_defaults(func=command_switch)
+
+    split = subparsers.add_parser("split", help="set a PIP/PBP split layout")
+    split.add_argument("target", help="split alias, config name, decimal value, or hex value")
+    split.add_argument("--sub-input", help="input alias, config name, decimal value, or hex value")
+    split.add_argument("--backend", choices=["auto", "ddcutil", "m1ddc", "ddcctl"])
+    split.add_argument("--display", help="backend display identifier, such as 1 or a UUID")
+    split.add_argument("--config", type=Path, help="config file path")
+    split.add_argument("--dry-run", action="store_true", help="print the backend command")
+    split.set_defaults(func=command_split)
 
     probe = subparsers.add_parser("probe", help="show backend discovery information")
     probe.add_argument("--backend", default="auto", choices=["auto", "ddcutil", "m1ddc", "ddcctl"])

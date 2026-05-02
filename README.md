@@ -74,6 +74,14 @@ dkvm switch dp1
 dkvm switch hdmi1
 ```
 
+Set a PIP/PBP split:
+
+```sh
+dkvm split off
+dkvm split pbp-50-50 --sub-input hdmi1
+dkvm split pbp-2x2
+```
+
 Show backend and display discovery information:
 
 ```sh
@@ -96,6 +104,11 @@ display = "1"
 [inputs]
 work = "0x0f"
 personal = "0x1b"
+
+[splits]
+off = { mode = "0x00" }
+two-way = { mode = "0x24", sub_input = "work" }
+four-way = { mode = "0x41" }
 ```
 
 Use named targets:
@@ -103,6 +116,8 @@ Use named targets:
 ```sh
 dkvm switch work
 dkvm switch personal
+dkvm split two-way
+dkvm split four-way
 ```
 
 ## Input Codes
@@ -127,6 +142,46 @@ To confirm your monitor's supported values on Linux:
 ```sh
 ddcutil capabilities | grep -A 8 "Input Source"
 ```
+
+## PIP/PBP Split Codes
+
+PIP/PBP support is more model-specific than input switching. On many Dell
+UltraSharp models, the split mode is VCP feature `0xe9` and the secondary input
+is VCP feature `0xe8`. `dkvm split` has built-in mode aliases matching the values
+exposed by `m1ddc` for some Dell displays:
+
+| Name | Value |
+| --- | --- |
+| `off` | `0x00` |
+| `pip-small` | `0x21` |
+| `pip-large` | `0x22` |
+| `pbp` / `pbp-50-50` | `0x24` |
+| `pbp-26-74` | `0x2b` |
+| `pbp-74-26` | `0x2c` |
+| `pbp-2x2` | `0x41` |
+
+Config entries under `[splits]` can be a mode value or a table:
+
+```toml
+[splits]
+solo = "0x00"
+work-personal = { mode = "0x24", sub_input = "work" }
+quad = { mode = "0x41" }
+```
+
+For monitor-specific layouts, use raw writes:
+
+```toml
+[splits]
+quad-custom = { writes = [
+  { feature = "0xe9", value = "0x41" },
+  { feature = "0xe8", value = "0x3e51" },
+] }
+```
+
+`ddcutil` can send any configured VCP write. `m1ddc` supports the known Dell
+PIP/PBP features `0xe9`, `0xe8`, and `0xe7`. The `ddcctl` fallback only supports
+input switching, so `dkvm split` is not available through that backend.
 
 ## Monitor Setup Notes
 
