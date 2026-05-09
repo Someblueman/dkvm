@@ -111,6 +111,13 @@ personal = "0x1b"
 off = { mode = "0x00" }
 two-way = { mode = "0x24", sub_input = "work" }
 four-way = { mode = "0x41" }
+
+[cycles.layouts]
+targets = ["off", "two-way", "four-way"]
+
+[hotkeys]
+kvm = "ctrl+meta+k"
+layouts = "ctrl+meta+l"
 ```
 
 Use named targets:
@@ -120,6 +127,8 @@ dkvm switch work
 dkvm switch personal
 dkvm split two-way
 dkvm split four-way
+dkvm cycle layouts
+dkvm kvm-toggle
 ```
 
 ## Input Codes
@@ -190,6 +199,90 @@ so `dkvm split` works through the native backend for the same monitor-supported
 PIP/PBP features and raw `[splits]` writes. The first native implementation uses
 macOS' default DDC display service and supports the usual one-external-monitor
 configuration; omit `--display` or use `--display 1`.
+
+## Hotkeys
+
+`dkvm` can listen for native macOS hotkeys itself. This requires a foreground
+`dkvm hotkeys run` process, but it does not require a third-party hotkey tool or
+a LaunchAgent installer.
+
+Cycle through configured layouts:
+
+```sh
+dkvm cycle layouts
+```
+
+Configure the cycle in `~/.config/dkvm/config.toml`:
+
+```toml
+[cycles.layouts]
+targets = ["off", "two-way", "four-way"]
+```
+
+Each invocation applies the next split target and records the last selected
+target under the user state directory. Use `--target` to apply a specific target
+from the cycle while keeping the same hotkey-safe command surface:
+
+```sh
+dkvm cycle layouts --target two-way
+```
+
+Move the monitor KVM to the next device:
+
+```sh
+dkvm kvm-toggle
+```
+
+For Dell displays this sends VCP feature `0xe7` with value `0xff00`. If your
+monitor needs a different value, pass it explicitly:
+
+```sh
+dkvm kvm-toggle --value 0xff00
+```
+
+Validate any hotkey command before binding it:
+
+```sh
+dkvm cycle layouts --dry-run
+dkvm kvm-toggle --dry-run
+```
+
+Configure hotkeys in `~/.config/dkvm/config.toml`:
+
+```toml
+[hotkeys]
+kvm = "ctrl+meta+k"
+layouts = "ctrl+meta+l"
+```
+
+Then start the listener:
+
+```sh
+dkvm hotkeys run
+```
+
+The default hotkey commands are:
+
+| Name | Keys | Command |
+| --- | --- | --- |
+| `kvm` | `ctrl+meta+k` | `dkvm kvm-toggle` |
+| `layouts` | `ctrl+meta+l` | `dkvm cycle layouts` |
+
+`meta` is treated as the macOS Command key. You can also use `cmd` or `command`.
+
+For explicit layout hotkeys, use table entries with a command:
+
+```toml
+[hotkeys.two-way]
+keys = "ctrl+meta+2"
+command = ["cycle", "layouts", "--target", "two-way"]
+```
+
+Preview registered hotkeys without listening:
+
+```sh
+dkvm hotkeys run --dry-run
+```
 
 ## Monitor Setup Notes
 

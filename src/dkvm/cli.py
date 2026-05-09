@@ -2,12 +2,19 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+import os
 from pathlib import Path
 import sys
 import tomllib
 
 from . import __version__
 from .backends import BACKENDS, BackendError, select_backend
+from .macos_hotkeys import (
+    HotkeyBinding,
+    MacOSHotkeyError,
+    MacOSHotkeyRunner,
+    hotkey_binding_from_config,
+)
 
 BACKEND_CHOICES = ["auto", *BACKENDS]
 
@@ -53,6 +60,13 @@ personal = "0x1b"
 off = { mode = "0x00" }
 two-way = { mode = "0x24", sub_input = "work" }
 four-way = { mode = "0x41" }
+
+[cycles.layouts]
+targets = ["off", "two-way", "four-way"]
+
+[hotkeys]
+kvm = "ctrl+meta+k"
+layouts = "ctrl+meta+l"
 """
 
 
@@ -65,6 +79,11 @@ class VcpWrite:
 def config_path() -> Path:
     xdg = Path.home() / ".config"
     return xdg / "dkvm" / "config.toml"
+
+
+def state_dir() -> Path:
+    xdg = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state"))
+    return xdg / "dkvm"
 
 
 def load_config(path: Path | None = None) -> dict[str, object]:
@@ -178,6 +197,61 @@ def resolve_split(
     return writes
 
 
+def resolve_cycle_targets(name: str, config: dict[str, object]) -> list[str]:
+    cycles = config.get("cycles", {})
+    if not isinstance(cycles, dict):
+        raise ValueError("cycles config must be a table")
+    raw_cycle = cycles.get(name)
+    if raw_cycle is None:
+        raise ValueError(f"cycle '{name}' is not configured")
+    if isinstance(raw_cycle, list):
+        raw_targets = raw_cycle
+    elif isinstance(raw_cycle, dict):
+        raw_targets = raw_cycle.get("targets")
+    else:
+        raise ValueError("cycle config must be an array or table with targets")
+    if not isinstance(raw_targets, list) or not raw_targets:
+        raise ValueError("cycle targets must be a non-empty array")
+    targets = [str(target) for target in raw_targets]
+    if any(not target.strip() for target in targets):
+        raise ValueError("cycle targets must not be empty")
+    return targets
+
+
+def cycle_state_path(name: str) -> Path:
+    safe_name = "".join(char if char.isalnum() or char in "._-" else "_" for char in name)
+    return state_dir() / f"cycle-{safe_name}.txt"
+
+
+def next_cycle_target(name: str, targets: list[str]) -> str:
+    path = cycle_state_path(name)
+    previous = path.read_text().strip() if path.exists() else ""
+    try:
+        previous_index = targets.index(previous)
+    except ValueError:
+        return targets[0]
+    return targets[(previous_index + 1) % len(targets)]
+
+
+def write_cycle_state(name: str, target: str) -> None:
+    path = cycle_state_path(name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"{target}\n")
+
+
+def resolve_hotkeys(config: dict[str, object]) -> list[HotkeyBinding]:
+    raw_hotkeys = config.get("hotkeys", {})
+    if not isinstance(raw_hotkeys, dict):
+        raise ValueError("hotkeys config must be a table")
+    bindings = [
+        hotkey_binding_from_config(str(name), raw)
+        for name, raw in raw_hotkeys.items()
+    ]
+    if not bindings:
+        raise ValueError("no hotkeys configured")
+    return bindings
+
+
 def configured_display(args: argparse.Namespace, config: dict[str, object]) -> str | None:
     display = args.display
     if display is None:
@@ -239,6 +313,95 @@ def command_split(args: argparse.Namespace) -> int:
             print(f"dkvm: command failed: {command.display()}", file=sys.stderr)
             print(f"dkvm: {exc}", file=sys.stderr)
             return 1
+    return 0
+
+
+def command_cycle(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+    backend_name = args.backend or str(config.get("backend", "auto"))
+    display = configured_display(args, config)
+
+    try:
+        backend = select_backend(backend_name, require_available=not args.dry_run)
+        targets = resolve_cycle_targets(args.name, config)
+        target = args.target or next_cycle_target(args.name, targets)
+        if target not in targets:
+            raise ValueError(f"cycle target '{target}' is not in cycle '{args.name}'")
+        writes = resolve_split(target, config)
+        commands = [
+            backend.set_vcp_command(display, write.feature, write.value) for write in writes
+        ]
+    except (BackendError, ValueError) as exc:
+        print(f"dkvm: {exc}", file=sys.stderr)
+        return 2
+
+    if args.dry_run:
+        print(f"cycle {args.name}: {target}")
+        for command in commands:
+            print(command.display())
+        return 0
+
+    for command in commands:
+        try:
+            backend.run(command)
+        except Exception as exc:
+            print(f"dkvm: command failed: {command.display()}", file=sys.stderr)
+            print(f"dkvm: {exc}", file=sys.stderr)
+            return 1
+    write_cycle_state(args.name, target)
+    return 0
+
+
+def command_kvm_toggle(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+    backend_name = args.backend or str(config.get("backend", "auto"))
+    display = configured_display(args, config)
+
+    try:
+        backend = select_backend(backend_name, require_available=not args.dry_run)
+        value = parse_vcp_value(args.value)
+        command = backend.set_vcp_command(display, KVM_FEATURE, value)
+    except (BackendError, ValueError) as exc:
+        print(f"dkvm: {exc}", file=sys.stderr)
+        return 2
+
+    if args.dry_run:
+        print(command.display())
+        return 0
+
+    try:
+        backend.run(command)
+    except Exception as exc:
+        print(f"dkvm: command failed: {command.display()}", file=sys.stderr)
+        print(f"dkvm: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def command_hotkeys_run(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+    try:
+        bindings = resolve_hotkeys(config)
+    except ValueError as exc:
+        print(f"dkvm: {exc}", file=sys.stderr)
+        return 2
+
+    for binding in bindings:
+        print(f"{binding.keys}: dkvm {' '.join(binding.command)}")
+    if args.dry_run:
+        return 0
+
+    def run_binding(binding: HotkeyBinding) -> None:
+        print(f"dkvm: hotkey {binding.name} -> dkvm {' '.join(binding.command)}")
+        code = main([*binding.command, "--config", str(args.config)] if args.config else binding.command)
+        if code:
+            print(f"dkvm: hotkey {binding.name} failed with exit code {code}", file=sys.stderr)
+
+    try:
+        MacOSHotkeyRunner(bindings, run_binding).run()
+    except MacOSHotkeyError as exc:
+        print(f"dkvm: {exc}", file=sys.stderr)
+        return 2
     return 0
 
 
@@ -316,6 +479,38 @@ def build_parser() -> argparse.ArgumentParser:
     split.add_argument("--config", type=Path, help="config file path")
     split.add_argument("--dry-run", action="store_true", help="print the backend command")
     split.set_defaults(func=command_split)
+
+    cycle = subparsers.add_parser("cycle", help="cycle through configured split layouts")
+    cycle.add_argument("name", help="configured cycle name, such as layouts")
+    cycle.add_argument("--target", help="apply a specific target from the cycle")
+    cycle.add_argument("--backend", choices=BACKEND_CHOICES)
+    cycle.add_argument("--display", help="backend display identifier, such as 1 or a UUID")
+    cycle.add_argument("--config", type=Path, help="config file path")
+    cycle.add_argument("--dry-run", action="store_true", help="print the backend command")
+    cycle.set_defaults(func=command_cycle)
+
+    kvm_toggle = subparsers.add_parser("kvm-toggle", help="move Dell KVM to the next device")
+    kvm_toggle.add_argument(
+        "--value",
+        default="0xff00",
+        help="KVM toggle VCP value; default is 0xff00 for Dell KVM-next",
+    )
+    kvm_toggle.add_argument("--backend", choices=BACKEND_CHOICES)
+    kvm_toggle.add_argument("--display", help="backend display identifier, such as 1 or a UUID")
+    kvm_toggle.add_argument("--config", type=Path, help="config file path")
+    kvm_toggle.add_argument("--dry-run", action="store_true", help="print the backend command")
+    kvm_toggle.set_defaults(func=command_kvm_toggle)
+
+    hotkeys = subparsers.add_parser("hotkeys", help="run native macOS hotkeys")
+    hotkey_subparsers = hotkeys.add_subparsers(dest="hotkeys_command", required=True)
+    hotkeys_run = hotkey_subparsers.add_parser("run", help="listen for configured hotkeys")
+    hotkeys_run.add_argument("--config", type=Path, help="config file path")
+    hotkeys_run.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="print configured hotkeys without registering them",
+    )
+    hotkeys_run.set_defaults(func=command_hotkeys_run)
 
     probe = subparsers.add_parser("probe", help="show backend discovery information")
     probe.add_argument("--backend", default="auto", choices=BACKEND_CHOICES)

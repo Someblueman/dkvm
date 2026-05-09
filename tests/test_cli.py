@@ -4,7 +4,15 @@ from pathlib import Path
 
 import pytest
 
-from dkvm.cli import load_config, main, resolve_input, resolve_split
+from dkvm.cli import (
+    cycle_state_path,
+    load_config,
+    main,
+    resolve_cycle_targets,
+    resolve_hotkeys,
+    resolve_input,
+    resolve_split,
+)
 
 
 def test_resolve_default_aliases() -> None:
@@ -51,6 +59,26 @@ def test_resolve_config_split_writes() -> None:
     }
     writes = resolve_split("quad", config)
     assert [(write.feature, write.value) for write in writes] == [(0xE9, 65), (0xE8, 15953)]
+
+
+def test_resolve_cycle_targets() -> None:
+    config = {"cycles": {"layouts": {"targets": ["off", "two-way"]}}}
+    assert resolve_cycle_targets("layouts", config) == ["off", "two-way"]
+
+
+def test_resolve_hotkeys_default_commands() -> None:
+    bindings = resolve_hotkeys({"hotkeys": {"kvm": "ctrl+meta+k", "layouts": "ctrl+meta+l"}})
+    assert [(binding.name, binding.command) for binding in bindings] == [
+        ("kvm", ["kvm-toggle"]),
+        ("layouts", ["cycle", "layouts"]),
+    ]
+
+
+def test_resolve_hotkeys_custom_command() -> None:
+    bindings = resolve_hotkeys(
+        {"hotkeys": {"two-way": {"keys": "ctrl+meta+2", "command": ["cycle", "layouts", "--target", "two-way"]}}}
+    )
+    assert bindings[0].command == ["cycle", "layouts", "--target", "two-way"]
 
 
 def test_load_config_missing_file(tmp_path: Path) -> None:
@@ -131,6 +159,119 @@ def test_split_dry_run_with_macos_native(capsys: pytest.CaptureFixture[str]) -> 
     assert capsys.readouterr().out.splitlines() == [
         "macos-native --display 1 setvcp e9 0x24",
         "macos-native --display 1 setvcp e8 0x11",
+    ]
+
+
+def test_cycle_dry_run_uses_first_target_without_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr("dkvm.cli.state_dir", lambda: tmp_path)
+    config = tmp_path / "config.toml"
+    config.write_text(
+        """
+backend = "ddcutil"
+display = "1"
+
+[splits]
+off = { mode = "0x00" }
+two-way = { mode = "0x24", sub_input = "hdmi1" }
+
+[cycles.layouts]
+targets = ["off", "two-way"]
+"""
+    )
+
+    assert main(["cycle", "layouts", "--config", str(config), "--dry-run"]) == 0
+    assert capsys.readouterr().out.splitlines() == [
+        "cycle layouts: off",
+        "ddcutil --display 1 setvcp e9 0x00",
+    ]
+    assert not cycle_state_path("layouts").exists()
+
+
+def test_cycle_dry_run_uses_next_target_from_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr("dkvm.cli.state_dir", lambda: tmp_path)
+    cycle_state_path("layouts").write_text("off\n")
+    config = tmp_path / "config.toml"
+    config.write_text(
+        """
+backend = "ddcutil"
+display = "1"
+
+[splits]
+off = { mode = "0x00" }
+two-way = { mode = "0x24", sub_input = "hdmi1" }
+
+[cycles.layouts]
+targets = ["off", "two-way"]
+"""
+    )
+
+    assert main(["cycle", "layouts", "--config", str(config), "--dry-run"]) == 0
+    assert capsys.readouterr().out.splitlines() == [
+        "cycle layouts: two-way",
+        "ddcutil --display 1 setvcp e9 0x24",
+        "ddcutil --display 1 setvcp e8 0x11",
+    ]
+
+
+def test_cycle_dry_run_can_force_cycle_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr("dkvm.cli.state_dir", lambda: tmp_path)
+    config = tmp_path / "config.toml"
+    config.write_text(
+        """
+backend = "ddcutil"
+display = "1"
+
+[splits]
+off = { mode = "0x00" }
+two-way = { mode = "0x24", sub_input = "hdmi1" }
+
+[cycles.layouts]
+targets = ["off", "two-way"]
+"""
+    )
+
+    assert (
+        main(["cycle", "layouts", "--target", "two-way", "--config", str(config), "--dry-run"])
+        == 0
+    )
+    assert capsys.readouterr().out.splitlines() == [
+        "cycle layouts: two-way",
+        "ddcutil --display 1 setvcp e9 0x24",
+        "ddcutil --display 1 setvcp e8 0x11",
+    ]
+
+
+def test_kvm_toggle_dry_run(capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["kvm-toggle", "--backend", "ddcutil", "--display", "1", "--dry-run"]) == 0
+    assert capsys.readouterr().out.strip() == "ddcutil --display 1 setvcp e7 0xff00"
+
+
+def test_hotkeys_run_dry_run(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    config = tmp_path / "config.toml"
+    config.write_text(
+        """
+[hotkeys]
+kvm = "ctrl+meta+k"
+layouts = "ctrl+meta+l"
+"""
+    )
+
+    assert main(["hotkeys", "run", "--config", str(config), "--dry-run"]) == 0
+    assert capsys.readouterr().out.splitlines() == [
+        "ctrl+meta+k: dkvm kvm-toggle",
+        "ctrl+meta+l: dkvm cycle layouts",
     ]
 
 
