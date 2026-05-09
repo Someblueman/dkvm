@@ -103,6 +103,37 @@ def test_split_dry_run_with_m1ddc(capsys: pytest.CaptureFixture[str]) -> None:
     assert capsys.readouterr().out.strip() == "m1ddc display 1 set pbp 65"
 
 
+def test_switch_dry_run_with_macos_native(capsys: pytest.CaptureFixture[str]) -> None:
+    assert (
+        main(["switch", "usb-c", "--backend", "macos-native", "--display", "1", "--dry-run"])
+        == 0
+    )
+    assert capsys.readouterr().out.strip() == "macos-native --display 1 setvcp 60 0x1b"
+
+
+def test_split_dry_run_with_macos_native(capsys: pytest.CaptureFixture[str]) -> None:
+    assert (
+        main(
+            [
+                "split",
+                "pbp-50-50",
+                "--sub-input",
+                "hdmi1",
+                "--backend",
+                "macos-native",
+                "--display",
+                "1",
+                "--dry-run",
+            ]
+        )
+        == 0
+    )
+    assert capsys.readouterr().out.splitlines() == [
+        "macos-native --display 1 setvcp e9 0x24",
+        "macos-native --display 1 setvcp e8 0x11",
+    ]
+
+
 def test_split_unsupported_backend(capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["split", "pbp-50-50", "--backend", "ddcctl", "--dry-run"]) == 2
     assert "does not support arbitrary VCP writes" in capsys.readouterr().err

@@ -9,6 +9,8 @@ import tomllib
 from . import __version__
 from .backends import BACKENDS, BackendError, select_backend
 
+BACKEND_CHOICES = ["auto", *BACKENDS]
+
 
 DEFAULT_INPUTS: dict[str, int] = {
     "dp": 0x0F,
@@ -300,7 +302,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     switch = subparsers.add_parser("switch", help="switch to an input")
     switch.add_argument("target", help="input alias, config name, decimal value, or hex value")
-    switch.add_argument("--backend", choices=["auto", "ddcutil", "m1ddc", "ddcctl"])
+    switch.add_argument("--backend", choices=BACKEND_CHOICES)
     switch.add_argument("--display", help="backend display identifier, such as 1 or a UUID")
     switch.add_argument("--config", type=Path, help="config file path")
     switch.add_argument("--dry-run", action="store_true", help="print the backend command")
@@ -309,19 +311,19 @@ def build_parser() -> argparse.ArgumentParser:
     split = subparsers.add_parser("split", help="set a PIP/PBP split layout")
     split.add_argument("target", help="split alias, config name, decimal value, or hex value")
     split.add_argument("--sub-input", help="input alias, config name, decimal value, or hex value")
-    split.add_argument("--backend", choices=["auto", "ddcutil", "m1ddc", "ddcctl"])
+    split.add_argument("--backend", choices=BACKEND_CHOICES)
     split.add_argument("--display", help="backend display identifier, such as 1 or a UUID")
     split.add_argument("--config", type=Path, help="config file path")
     split.add_argument("--dry-run", action="store_true", help="print the backend command")
     split.set_defaults(func=command_split)
 
     probe = subparsers.add_parser("probe", help="show backend discovery information")
-    probe.add_argument("--backend", default="auto", choices=["auto", "ddcutil", "m1ddc", "ddcctl"])
+    probe.add_argument("--backend", default="auto", choices=BACKEND_CHOICES)
     probe.add_argument("--dry-run", action="store_true", help="print the probe command only")
     probe.set_defaults(func=command_probe)
 
     doctor = subparsers.add_parser("doctor", help="check installed DDC backends")
-    doctor.add_argument("--backend", default="auto", choices=["auto", "ddcutil", "m1ddc", "ddcctl"])
+    doctor.add_argument("--backend", default="auto", choices=BACKEND_CHOICES)
     doctor.set_defaults(func=command_doctor)
 
     init = subparsers.add_parser("init", help="write a starter config")

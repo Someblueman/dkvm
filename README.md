@@ -14,10 +14,10 @@ The first target is a Dell UltraSharp-style setup:
 
 ## Install
 
-For now this is a Python CLI wrapper around proven open-source DDC tools. The
-main runtime dependency is the `ddcutil` system package on Linux. It cannot be
-declared as a Python package dependency because it is an external binary with
-kernel/I2C access requirements.
+This is a Python CLI around DDC/CI monitor control. On Linux, the main runtime
+dependency is the `ddcutil` system package. It cannot be declared as a Python
+package dependency because it is an external binary with kernel/I2C access
+requirements.
 
 Linux:
 
@@ -33,14 +33,15 @@ Or install manually with your distribution package manager, for example
 macOS:
 
 ```sh
-brew install m1ddc
 python -m pip install git+ssh://git@github.com/Someblueman/dkvm.git
 dkvm doctor
 ```
 
-`ddcutil` is the primary backend for Linux. macOS support uses `m1ddc` on Apple
-Silicon, or `ddcctl` as a fallback on Intel Macs, because DDC access differs
-from Linux.
+`ddcutil` is the primary backend for Linux. On Apple Silicon macOS, `dkvm` can
+write DDC/VCP values directly with its `macos-native` backend, so `m1ddc` is no
+longer required for the common Dell input and PIP/PBP flows. `m1ddc` and `ddcctl`
+remain fallbacks because DDC access differs by Mac model, port, adapter, and
+display.
 
 For isolated installs, use `pipx`:
 
@@ -64,6 +65,7 @@ List the command that would be run:
 ```sh
 dkvm switch usb-c --dry-run
 dkvm switch dp1 --display 1 --dry-run
+dkvm switch usb-c --backend macos-native --dry-run
 ```
 
 Switch input:
@@ -183,6 +185,12 @@ quad-custom = { writes = [
 PIP/PBP features `0xe9`, `0xe8`, and `0xe7`. The `ddcctl` fallback only supports
 input switching, so `dkvm split` is not available through that backend.
 
+On Apple Silicon macOS, `macos-native` also sends generic VCP writes directly,
+so `dkvm split` works through the native backend for the same monitor-supported
+PIP/PBP features and raw `[splits]` writes. The first native implementation uses
+macOS' default DDC display service and supports the usual one-external-monitor
+configuration; omit `--display` or use `--display 1`.
+
 ## Monitor Setup Notes
 
 In the Dell OSD, enable DDC/CI and set the USB upstream assignment for each input.
@@ -194,11 +202,14 @@ is likely the monitor's USB assignment rather than `dkvm`.
 
 ## Current Scope
 
-This project currently shells out to:
+This project currently supports:
 
 - `ddcutil` on Linux
-- `m1ddc` on Apple Silicon macOS
+- native macOS DDC access on Apple Silicon
+- `m1ddc` as an Apple Silicon macOS fallback
 - `ddcctl` as a macOS fallback
 
-Native DDC implementations can be added later once the command behavior is proven
-against real monitors.
+The native Apple Silicon backend uses macOS system frameworks directly rather
+than requiring a Homebrew-installed helper. It has the same practical port
+limits as the open Apple Silicon DDC tools it replaces; some built-in HDMI paths
+on M1 and entry-level M2 Macs are not supported by this transport.
